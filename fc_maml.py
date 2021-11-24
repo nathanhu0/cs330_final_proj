@@ -18,7 +18,7 @@ SAVE_INTERVAL = 50
 LOG_INTERVAL = 10
 VAL_INTERVAL = LOG_INTERVAL * 5
 NUM_TEST_TASKS = 600
-LAYER_SIZES = [256, 128, 64, 32]
+LAYER_SIZES = [256, 128, 64, 64]
 class fc_MAML:
     """Trains and assesses a MAML."""
 
@@ -110,6 +110,7 @@ class fc_MAML:
                 weight=parameters[f'w{i}']*self._mask[f'w{i}'],
                 bias=parameters[f'b{i}']*self._mask[f'b{i}']
                 )
+            x = F.batch_norm(x, None, None, training=True)
             x = F.relu(x)
         return F.linear(
             input=x,
