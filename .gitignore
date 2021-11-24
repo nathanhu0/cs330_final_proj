@@ -1,0 +1,4 @@
+omniglot_*
+__pycache__/
+final_proj_venv/
+logs/
