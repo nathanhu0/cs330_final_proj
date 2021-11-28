@@ -9,12 +9,13 @@ from torch import autograd  # pylint: disable=unused-import
 from torch.utils import tensorboard
 from tqdm import tqdm
 import omniglot
+import miniimagenet
 import util  # pylint: disable=unused-import
 import pruning 
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 SUMMARY_INTERVAL = 10
-SAVE_INTERVAL = 50
+SAVE_INTERVAL = 250
 LOG_INTERVAL = 10
 VAL_INTERVAL = LOG_INTERVAL * 5
 NUM_TEST_TASKS = 600
@@ -188,6 +189,37 @@ class fc_MAML:
         accuracy_query = np.mean(accuracy_query_batch)
         return outer_loss, accuracies_support, accuracy_query
 
+    def test_pruning(self, dataloader_test): 
+        n_dif = 12
+        compound_density = [.8**i for i in range(n_dif)]
+        cum_accuracies = [[] for _ in range(n_dif)]
+        for task_batch in tqdm(dataloader_test):
+            for task in task_batch:
+                images_support, labels_support, images_query, labels_query = task
+                images_support = images_support.to(DEVICE)
+                labels_support = labels_support.to(DEVICE)
+                images_query = images_query.to(DEVICE)
+                labels_query = labels_query.to(DEVICE)
+
+                parameters, _ = self._inner_loop(images_support, labels_support, False)
+                base_sparsity = self.get_sparsity()
+                for i in range(n_dif):
+                    mask = pruning.global_magnitude_pruning(parameters, 1 -compound_density[i]*(1 - base_sparsity))
+                    masked_parameters = {
+                        k: torch.clone(v)*mask[k]
+                        for k, v in parameters.items()
+                    }
+                    output = self._forward(images_query, masked_parameters)
+                    cum_accuracies[i].append(util.score(output, labels_query))
+
+        mean = [np.mean(cum_accuracies[i]) for i in range(n_dif)]
+        err_95ci = [1.96 *np.std(cum_accuracies[i])/np.sqrt(len(cum_accuracies[i])) for i in range(n_dif)]
+
+        print('means: ', mean)
+        print('err_95ci: ', err_95ci)
+        
+
+
     def train(self, dataloader_train, dataloader_val, writer, prune):
         """Train the MAML.
 
@@ -200,9 +232,9 @@ class fc_MAML:
             dataloader_val (DataLoader): loader for validation tasks
             writer (SummaryWriter): TensorBoard logger
         """
-        PREPRUNE_STEPS = 3000
-        PRUNE_EVERY = 500
-        PRUNE_FRAC = .05
+        PREPRUNE_STEPS = 30000
+        PRUNE_EVERY = 10000
+        PRUNE_FRAC = .8
         print(f'Starting training at iteration {self._start_train_step}.')
         for i_step, task_batch in enumerate(
                 dataloader_train,
@@ -298,9 +330,7 @@ class fc_MAML:
                 self._save(i_step)
 
             if prune and i_step >= PREPRUNE_STEPS and i_step%PRUNE_EVERY == 0:
-                next_sparsity =  ((i_step - PREPRUNE_STEPS)/PRUNE_EVERY + 1)*PRUNE_FRAC  
-                if next_sparsity > 1:
-                    break
+                next_sparsity =  1 - PRUNE_FRAC**((i_step - PREPRUNE_STEPS)/PRUNE_EVERY + 1)
                 self.set_mask(pruning.global_magnitude_pruning(self._meta_parameters, next_sparsity))
                 print(f'PRUNING to {next_sparsity} sparsity')
 
@@ -359,6 +389,13 @@ class fc_MAML:
     def get_sparsity(self):
         return 1 - torch.cat([tensor.view(-1) for tensor in self._mask.values()]).mean()
 
+    def print_sparisty(self):
+        print('avg_sparsity: ', self.get_sparsity()) 
+        for key, value in self._mask.items():
+            print(key, 1 - value.mean())
+        
+
+
     def _save(self, checkpoint_step):
         """Saves parameters and optimizer state_dict as a checkpoint.
 
@@ -381,7 +418,7 @@ def main(args):
         log_dir = f'./logs/fc_maml/layers.{"-". join([str(i) for i in LAYER_SIZES])}.omniglot.way:{args.num_way}.support:{args.num_support}.query:{args.num_query}.inner_steps:{args.num_inner_steps}.inner_lr:{args.inner_lr}.learn_inner_lrs:{args.learn_inner_lrs}.outer_lr:{args.outer_lr}.batch_size:{args.batch_size}.prune:{args.prune}'  # pylint: disable=line-too-long
     print(f'log_dir: {log_dir}')
     writer = tensorboard.SummaryWriter(log_dir=log_dir)
-
+    gen_dataset_function = miniimagenet.get_miniimagenet_dataloader if args.mini_imagenet else omniglot.get_omniglot_dataloader
     maml = fc_MAML(
         args.num_way,
         args.num_inner_steps,
@@ -405,7 +442,7 @@ def main(args):
             f'num_support={args.num_support}, '
             f'num_query={args.num_query}'
         )
-        dataloader_train = omniglot.get_omniglot_dataloader(
+        dataloader_train = gen_dataset_function(
             'train',
             args.batch_size,
             args.num_way,
@@ -413,7 +450,7 @@ def main(args):
             args.num_query,
             num_training_tasks
         )
-        dataloader_val = omniglot.get_omniglot_dataloader(
+        dataloader_val = gen_dataset_function(
             'val',
             args.batch_size,
             args.num_way,
@@ -434,7 +471,8 @@ def main(args):
             f'num_support={args.num_support}, '
             f'num_query={args.num_query}'
         )
-        dataloader_test = omniglot.get_omniglot_dataloader(
+        maml.print_sparisty()
+        dataloader_test = gen_dataset_function(
             'test',
             1,
             args.num_way,
@@ -442,7 +480,10 @@ def main(args):
             args.num_query,
             NUM_TEST_TASKS
         )
-        _, _ = maml.test(dataloader_test)
+        if args.prune:
+            maml.test_pruning(dataloader_test)
+        else:
+            _, _ = maml.test(dataloader_test)
 
 
 if __name__ == '__main__':
@@ -465,7 +506,7 @@ if __name__ == '__main__':
                         help='outer-loop learning rate')
     parser.add_argument('--batch_size', type=int, default=16,
                         help='number of tasks per outer-loop update')
-    parser.add_argument('--num_train_iterations', type=int, default=15000,
+    parser.add_argument('--num_train_iterations', type=int, default=50000,
                         help='number of outer-loop updates to train for')
     parser.add_argument('--test', default=False, action='store_true',
                         help='train or test')
@@ -474,6 +515,7 @@ if __name__ == '__main__':
                               'training, or for evaluation (-1 is ignored)'))
     parser.add_argument('--prune', default=False, action='store_true',
                         help=('prune while training?'))
-
+    parser.add_argument('--mini_imagenet', default=False, action='store_true',
+                        help=('use miniimagenet instead of omniglot'))
     main_args = parser.parse_args()
     main(main_args)

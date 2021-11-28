@@ -1,16 +1,38 @@
 from maml import MAML
-
+import pruning
 
 num_way = 5
 num_inner_steps = 1
 inner_lr =.4
-learn_inner_lrs = False
+learn_inner_lrs = True
 outer_lr = 0.001
+batch_size = 16
+num_support = 1
+num_query = 15
+num_train_iterations = 4000
+sparsities = []
+save_dir = './logs/maml/lottery_omniglot.way:5.support:1.query:15.inner_steps:1.inner_lr:0.4.learn_inner_lrs:True.outer_lr:0.001.batch_size:16'
 
-source_dir = './logs/maml/omniglot.way:5.support:1.query:15.inner_steps:1.inner_lr:0.4.learn_inner_lrs:False.outer_lr:0.001.batch_size:16.prune:True'
-same_dir = './logs/maml/lottery_same'
-dif_dir = './logs/maml/lottery_dif'
-source_state = 11000
+num_training_tasks = batch_size * num_train_iterations
+
+dataloader_train = omniglot.get_omniglot_dataloader(
+    'train',
+    batch_size,
+    num_way,
+    num_support,
+    num_query,
+    num_training_tasks
+)
+dataloader_val = omniglot.get_omniglot_dataloader(
+    'val',
+    args.batch_size,
+    args.num_way,
+    args.num_support,
+    args.num_query,
+    args.batch_size * 4
+)
+
+
 
 maml_mask = MAML(
         num_way,

@@ -236,7 +236,7 @@ class MAML:
         """
         PREPRUNE_STEPS = 3000
         PRUNE_EVERY = 500
-        PRUNE_FRAC = .05
+        PRUNE_FRAC = .8
         print(f'Starting training at iteration {self._start_train_step}.')
         for i_step, task_batch in enumerate(
                 dataloader_train,
@@ -332,12 +332,9 @@ class MAML:
                 self._save(i_step)
 
             if prune and i_step >= PREPRUNE_STEPS and i_step%PRUNE_EVERY == 0:
-                next_sparsity =  ((i_step - PREPRUNE_STEPS)/PRUNE_EVERY + 1)*PRUNE_FRAC  
-                if next_sparsity > 1:
-                    break
+                next_sparsity =  1 - PRUNE_FRAC**((i_step - PREPRUNE_STEPS)/PRUNE_EVERY + 1)
                 self.set_mask(pruning.global_magnitude_pruning(self._meta_parameters, next_sparsity))
                 print(f'PRUNING to {next_sparsity} sparsity')
-
     def test(self, dataloader_test):
         """Evaluate the MAML on test tasks.
 
@@ -413,7 +410,7 @@ class MAML:
 def main(args):
     log_dir = args.log_dir
     if log_dir is None:
-        log_dir = f'./logs/maml/omniglot.way:{args.num_way}.support:{args.num_support}.query:{args.num_query}.inner_steps:{args.num_inner_steps}.inner_lr:{args.inner_lr}.learn_inner_lrs:{args.learn_inner_lrs}.outer_lr:{args.outer_lr}.batch_size:{args.batch_size}.prune:{args.prune}.dataset:{"miniImagenet" if args.mini_imagenet else "omniglot"}'  # pylint: disable=line-too-long
+        log_dir = f'./logs/maml/{"miniImagenet" if args.mini_imagenet else "omniglot"}.way:{args.num_way}.support:{args.num_support}.query:{args.num_query}.inner_steps:{args.num_inner_steps}.inner_lr:{args.inner_lr}.learn_inner_lrs:{args.learn_inner_lrs}.outer_lr:{args.outer_lr}.batch_size:{args.batch_size}.prune:{args.prune}'  # pylint: disable=line-too-long
     print(f'log_dir: {log_dir}')
     writer = tensorboard.SummaryWriter(log_dir=log_dir)
     gen_dataset_function = miniimagenet.get_miniimagenet_dataloader if args.mini_imagenet else omniglot.get_omniglot_dataloader
@@ -454,7 +451,7 @@ def main(args):
             args.num_way,
             args.num_support,
             args.num_query,
-            args.batch_size * 4
+            max(args.batch_size * 4, 32)
         )
         maml.train(
             dataloader_train,
