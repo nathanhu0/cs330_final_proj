@@ -10,16 +10,18 @@ from torch import autograd  # pylint: disable=unused-import
 from torch.utils import tensorboard
 from tqdm import tqdm
 import omniglot
+import miniimagenet
 import util  # pylint: disable=unused-import
 import pruning 
 
+#need to manually change these
 NUM_INPUT_CHANNELS = 1
 NUM_HIDDEN_CHANNELS = 64
 KERNEL_SIZE = 3
 NUM_CONV_LAYERS = 4
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 SUMMARY_INTERVAL = 10
-SAVE_INTERVAL = 50
+SAVE_INTERVAL = 100
 LOG_INTERVAL = 10
 VAL_INTERVAL = LOG_INTERVAL * 5
 NUM_TEST_TASKS = 600
@@ -411,10 +413,10 @@ class MAML:
 def main(args):
     log_dir = args.log_dir
     if log_dir is None:
-        log_dir = f'./logs/maml/omniglot.way:{args.num_way}.support:{args.num_support}.query:{args.num_query}.inner_steps:{args.num_inner_steps}.inner_lr:{args.inner_lr}.learn_inner_lrs:{args.learn_inner_lrs}.outer_lr:{args.outer_lr}.batch_size:{args.batch_size}.prune:{args.prune}'  # pylint: disable=line-too-long
+        log_dir = f'./logs/maml/omniglot.way:{args.num_way}.support:{args.num_support}.query:{args.num_query}.inner_steps:{args.num_inner_steps}.inner_lr:{args.inner_lr}.learn_inner_lrs:{args.learn_inner_lrs}.outer_lr:{args.outer_lr}.batch_size:{args.batch_size}.prune:{args.prune}.dataset:{"miniImagenet" if args.mini_imagenet else "omniglot"}'  # pylint: disable=line-too-long
     print(f'log_dir: {log_dir}')
     writer = tensorboard.SummaryWriter(log_dir=log_dir)
-
+    gen_dataset_function = miniimagenet.get_miniimagenet_dataloader if args.mini_imagenet else omniglot.get_omniglot_dataloader
     maml = MAML(
         args.num_way,
         args.num_inner_steps,
@@ -438,7 +440,7 @@ def main(args):
             f'num_support={args.num_support}, '
             f'num_query={args.num_query}'
         )
-        dataloader_train = omniglot.get_omniglot_dataloader(
+        dataloader_train = gen_dataset_function(
             'train',
             args.batch_size,
             args.num_way,
@@ -446,7 +448,7 @@ def main(args):
             args.num_query,
             num_training_tasks
         )
-        dataloader_val = omniglot.get_omniglot_dataloader(
+        dataloader_val = gen_dataset_function(
             'val',
             args.batch_size,
             args.num_way,
@@ -467,7 +469,7 @@ def main(args):
             f'num_support={args.num_support}, '
             f'num_query={args.num_query}'
         )
-        dataloader_test = omniglot.get_omniglot_dataloader(
+        dataloader_test = gen_dataset_function(
             'test',
             1,
             args.num_way,
@@ -507,6 +509,10 @@ if __name__ == '__main__':
                               'training, or for evaluation (-1 is ignored)'))
     parser.add_argument('--prune', default=False, action='store_true',
                         help=('prune while training?'))
-
+    parser.add_argument('--mini_imagenet', default=False, action='store_true',
+                        help=('use miniimagenet instead of omniglot'))
     main_args = parser.parse_args()
+    if main_args.mini_imagenet:
+        NUM_INPUT_CHANNELS = 3
+        NUM_HIDDEN_CHANNELS = 32
     main(main_args)
