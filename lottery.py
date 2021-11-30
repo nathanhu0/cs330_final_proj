@@ -1,6 +1,10 @@
 from maml import MAML
 import pruning
+import omniglot
+from torch.utils import tensorboard
 
+alpha = .8
+lottery_iterations = 15
 num_way = 5
 num_inner_steps = 1
 inner_lr =.4
@@ -11,7 +15,7 @@ num_support = 1
 num_query = 15
 num_train_iterations = 4000
 sparsities = []
-save_dir = './logs/maml/lottery_omniglot.way:5.support:1.query:15.inner_steps:1.inner_lr:0.4.learn_inner_lrs:True.outer_lr:0.001.batch_size:16'
+save_dir = './logs/maml/lottery/'
 
 num_training_tasks = batch_size * num_train_iterations
 
@@ -25,48 +29,41 @@ dataloader_train = omniglot.get_omniglot_dataloader(
 )
 dataloader_val = omniglot.get_omniglot_dataloader(
     'val',
-    args.batch_size,
-    args.num_way,
-    args.num_support,
-    args.num_query,
-    args.batch_size * 4
+    batch_size,
+    num_way,
+    num_support,
+    num_query,
+    batch_size * 4
 )
 
-
-
-maml_mask = MAML(
+maml = MAML(
         num_way,
         num_inner_steps,
         inner_lr,
         learn_inner_lrs,
         outer_lr,
-        source_dir
-    )
-maml_mask.load(source_state)
-
-maml_same_init = MAML(
-        num_way,
-        num_inner_steps,
-        inner_lr,
-        learn_inner_lrs,
-        outer_lr,
-        same_dir
-    )
-maml_same_init._log_dir = source_dir
-maml_same_init.load(0)
-maml_same_init._log_dir = same_dir
-
-maml_new_init = MAML(
-        num_way,
-        num_inner_steps,
-        inner_lr,
-        learn_inner_lrs,
-        outer_lr,
-        dif_dir
+        save_dir+'0'
     )
 
-maml_same_init.set_mask(maml_mask._mask)
-maml_new_init.set_mask(maml_mask._mask)
-
-maml_same_init._save(0)
-maml_new_init._save(0)
+maml._save(0)
+prev_iteration_parameters = maml._meta_parameters
+for i in range(lottery_iterations):
+    sparisty = 1 - alpha**i
+    mask = pruning.global_magnitude_pruning(prev_iteration_parameters, sparisty)
+    maml._log_dir = save_dir+'0'
+    maml.load(0)
+    maml.set_mask(mask)
+    maml._log_dir = save_dir+f'{i}'
+    maml.reset_optimizer()
+    writer = tensorboard.SummaryWriter(log_dir=save_dir+f'{i}')
+    print('Starting to train model', i, 'with sparsity:')
+    maml.print_sparisty()
+    maml.train(
+        dataloader_train,
+        dataloader_val,
+        writer, 
+        False
+    )
+    print('Finished training model', i)
+    prev_iteration_parameters = maml._meta_parameters
+    
