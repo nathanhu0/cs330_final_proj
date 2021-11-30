@@ -232,8 +232,8 @@ class fc_MAML:
             dataloader_val (DataLoader): loader for validation tasks
             writer (SummaryWriter): TensorBoard logger
         """
-        PREPRUNE_STEPS = 30000
-        PRUNE_EVERY = 10000
+        PREPRUNE_STEPS = 15000
+        PRUNE_EVERY = 5000
         PRUNE_FRAC = .8
         print(f'Starting training at iteration {self._start_train_step}.')
         for i_step, task_batch in enumerate(
@@ -385,16 +385,22 @@ class fc_MAML:
         with torch.no_grad():
             for k in self._meta_parameters.keys():
                 self._meta_parameters[k]*=mask[k]
-
+        self.reset_optimizer()
     def get_sparsity(self):
         return 1 - torch.cat([tensor.view(-1) for tensor in self._mask.values()]).mean()
 
     def print_sparisty(self):
+        print('lr:', self._inner_lrs)
         print('avg_sparsity: ', self.get_sparsity()) 
         for key, value in self._mask.items():
             print(key, 1 - value.mean())
         
-
+    def reset_optimizer(self):
+        self._optimizer = torch.optim.Adam(
+            list(self._meta_parameters.values()) +
+            list(self._inner_lrs.values()),
+            lr=self._outer_lr
+        )
 
     def _save(self, checkpoint_step):
         """Saves parameters and optimizer state_dict as a checkpoint.

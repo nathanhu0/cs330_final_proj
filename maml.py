@@ -121,6 +121,12 @@ class MAML:
         self._start_train_step = 0
         self._mask = {key: torch.ones(value.shape, requires_grad=False, device=DEVICE) for key, value in meta_parameters.items()}
 
+    def reset_optimizer(self):
+        self._optimizer = torch.optim.Adam(
+            list(self._meta_parameters.values()) +
+            list(self._inner_lrs.values()),
+            lr=self._outer_lr
+        )
     def _forward(self, images, parameters):
         """Computes predicted classification logits.
 
@@ -221,6 +227,48 @@ class MAML:
         )
         accuracy_query = np.mean(accuracy_query_batch)
         return outer_loss, accuracies_support, accuracy_query
+    def test_pruning(self, dataloader_test): 
+        n_dif = 12
+        compound_density = [.8**i for i in range(n_dif)]
+        cum_accuracies = [[] for _ in range(n_dif)]
+        for task_batch in tqdm(dataloader_test):
+            for task in task_batch:
+                images_support, labels_support, images_query, labels_query = task
+                images_support = images_support.to(DEVICE)
+                labels_support = labels_support.to(DEVICE)
+                images_query = images_query.to(DEVICE)
+                labels_query = labels_query.to(DEVICE)
+
+                parameters, _ = self._inner_loop(images_support, labels_support, False)
+                base_sparsity = self.get_sparsity()
+                for i in range(n_dif):
+                    mask = pruning.global_magnitude_pruning(parameters, 1 -compound_density[i]*(1 - base_sparsity))
+                    masked_parameters = {
+                        k: torch.clone(v)*mask[k]
+                        for k, v in parameters.items()
+                    }
+                    output = self._forward(images_query, masked_parameters)
+                    cum_accuracies[i].append(util.score(output, labels_query))
+
+        mean = [np.mean(cum_accuracies[i]) for i in range(n_dif)]
+        err_95ci = [1.96 *np.std(cum_accuracies[i])/np.sqrt(len(cum_accuracies[i])) for i in range(n_dif)]
+
+        print('means: ', mean)
+        print('err_95ci: ', err_95ci)
+
+    def pre_prune_test(self, dataloader_test): 
+        n_dif = 12
+        compound_density = [.8**i for i in range(n_dif)]
+        accuracies = []
+        err_95cis = []
+        for i in range(n_dif):
+            mask = pruning.global_magnitude_pruning(self._meta_parameters, 1 -compound_density[i])
+            self.set_mask(mask)
+            m, s = self.test(dataloader_test)
+            accuracies.append(m)
+            err_95cis.append(s)
+        print('means: ', accuracies)
+        print('err_95ci: ', err_95cis)
 
     def train(self, dataloader_train, dataloader_val, writer, prune):
         """Train the MAML.
@@ -234,7 +282,7 @@ class MAML:
             dataloader_val (DataLoader): loader for validation tasks
             writer (SummaryWriter): TensorBoard logger
         """
-        PREPRUNE_STEPS = 3000
+        PREPRUNE_STEPS = 2000
         PRUNE_EVERY = 500
         PRUNE_FRAC = .8
         print(f'Starting training at iteration {self._start_train_step}.')
@@ -386,9 +434,16 @@ class MAML:
         with torch.no_grad():
             for k in self._meta_parameters.keys():
                 self._meta_parameters[k]*=mask[k]
+        self.reset_optimizer()
 
     def get_sparsity(self):
         return 1 - torch.cat([tensor.view(-1) for tensor in self._mask.values()]).mean()
+
+    def print_sparisty(self):
+        print('lr:', self._inner_lrs)
+        print('avg_sparsity: ', self.get_sparsity()) 
+        for key, value in self._mask.items():
+            print(key, 1 - value.mean())
 
     def _save(self, checkpoint_step):
         """Saves parameters and optimizer state_dict as a checkpoint.
@@ -466,6 +521,9 @@ def main(args):
             f'num_support={args.num_support}, '
             f'num_query={args.num_query}'
         )
+
+        maml.print_sparisty()
+
         dataloader_test = gen_dataset_function(
             'test',
             1,
@@ -474,8 +532,12 @@ def main(args):
             args.num_query,
             NUM_TEST_TASKS
         )
-        _, _ = maml.test(dataloader_test)
-
+        if args.pre_prune_test:
+            maml.pre_prune_test(dataloader_test)
+        elif args.prune:
+            maml.test_pruning(dataloader_test)
+        else:
+            _, _ = maml.test(dataloader_test)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Train a MAML!')
@@ -508,6 +570,8 @@ if __name__ == '__main__':
                         help=('prune while training?'))
     parser.add_argument('--mini_imagenet', default=False, action='store_true',
                         help=('use miniimagenet instead of omniglot'))
+    parser.add_argument('--pre_prune_test', default=False, action='store_true',
+                        help=('test preadaptation pruning with no fine_tuning'))
     main_args = parser.parse_args()
     if main_args.mini_imagenet:
         NUM_INPUT_CHANNELS = 3
